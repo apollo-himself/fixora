@@ -1,0 +1,146 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.role == 'ADMIN' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN');
+    }
+
+    function isProvider() {
+      return isAuthenticated() &&
+        (request.auth.token.role == 'PROVIDER' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'PROVIDER');
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isUser(userId) || isAdmin();
+    }
+
+    // Customer Profiles & Addresses
+    match /customer_profiles/{userId} {
+      allow read, write: if isUser(userId) || isAdmin();
+    }
+
+    match /customer_profiles/{userId}/addresses/{addressId} {
+      allow read, write: if isUser(userId) || isAdmin();
+    }
+
+    // Provider Profiles
+    match /provider_profiles/{providerId} {
+      allow read: if isAuthenticated();
+      allow create: if isProvider() || isAdmin();
+      allow update: if (isProvider() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Confidential Provider Documents (Emirates ID, License) - Strictly restricted!
+    match /provider_documents/{providerId} {
+      allow read: if (isProvider() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow write: if (isProvider() && request.auth.uid == request.resource.data.userId) || isAdmin();
+    }
+
+    // Service Categories & Service Catalog (Publicly readable)
+    match /service_categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /service_catalog/{serviceId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Bookings
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.providerId == request.auth.uid ||
+        isAdmin() ||
+        (isProvider() && resource.data.status in ['REQUESTED', 'MATCHING'])
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.providerId == request.auth.uid ||
+        (isProvider() && resource.data.status in ['REQUESTED', 'MATCHING']) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Quotations
+    match /quotations/{quotationId} {
+      allow read: if isAuthenticated() && (
+        resource.data.providerId == request.auth.uid ||
+        get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isProvider() || isAdmin();
+      allow update: if isAuthenticated();
+    }
+
+    // Chat Conversations & Messages
+    match /conversations/{conversationId}/messages/{messageId} {
+      allow read, create: if isAuthenticated() && (
+        resource.data.senderId == request.auth.uid ||
+        request.resource.data.senderId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // Reviews (Publicly readable, authenticated write)
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.resource.data.customerId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // Disputes
+    match /disputes/{disputeId} {
+      allow read: if isAuthenticated() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.providerId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAdmin();
+    }
+
+    // Financial Ledger, Commissions, and Payout Records - ADMIN ONLY
+    match /financial_ledger/{entryId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /commissions/{commissionId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /payouts/{payoutId} {
+      allow read: if (isProvider() && resource.data.providerId == request.auth.uid) || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Admin Settings & Audit Logs
+    match /admin_settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /audit_logs/{logId} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

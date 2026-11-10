@@ -1,0 +1,14 @@
+.gradle/
+.idea/
+.kotlin/
+build/
+local.properties
+**/google-services*.json
+*.jks
+*.keystore
+*.apk
+*.aab
+.env
+.env.*
+!.env.example
+Fixora-Neon-UI.zip
