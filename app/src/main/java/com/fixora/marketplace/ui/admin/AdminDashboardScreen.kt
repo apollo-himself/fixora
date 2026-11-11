@@ -1,8 +1,11 @@
 package com.fixora.marketplace.ui.admin
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,30 +14,41 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fixora.marketplace.data.model.*
 import com.fixora.marketplace.data.repository.FixoraRepository
-import com.fixora.marketplace.ui.components.FixoraTopBar
+import com.fixora.marketplace.ui.components.FixoraBrandMark
 import com.fixora.marketplace.ui.theme.*
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
-// ─── Tab definitions ──────────────────────────────────────────────────────────
-private enum class AdminTab(val label: String, val icon: ImageVector) {
-    OVERVIEW("Overview", Icons.Default.Dashboard),
-    BOOKINGS("Bookings", Icons.Default.CalendarToday),
-    PROVIDERS("Providers", Icons.Default.Build),
-    FINANCE("Finance", Icons.Default.AccountBalance)
+private enum class AdminTab(val title: String, val icon: ImageVector) {
+    OVERVIEW("Dashboard", Icons.Default.Dashboard),
+    USERS("Users", Icons.Default.People),
+    PROVIDERS("Service providers", Icons.Default.BusinessCenter),
+    BOOKINGS("Orders and bookings", Icons.Default.CalendarMonth),
+    FINANCE("Payments and payouts", Icons.Default.AccountBalanceWallet)
 }
 
 @Composable
@@ -43,172 +57,214 @@ fun AdminDashboardScreen(
     onViewDisputes: () -> Unit,
     onViewCategories: () -> Unit,
     onRoleSwitched: (UserRole) -> Unit,
-    onNavigateBack: () -> Unit = { onRoleSwitched(UserRole.CUSTOMER) }
+    onNavigateBack: () -> Unit = { onRoleSwitched(UserRole.CUSTOMER) },
+    onViewJobRequests: () -> Unit,
+    onViewBooking: (String) -> Unit
 ) {
-    val currentUser     by FixoraRepository.currentUser.collectAsState()
-    val providers       by FixoraRepository.providers.collectAsState()
-    val bookings        by FixoraRepository.bookings.collectAsState()
-    val ledger          by FixoraRepository.ledger.collectAsState()
-    val disputes        by FixoraRepository.disputes.collectAsState()
-    val adminSettings   by FixoraRepository.adminSettings.collectAsState()
+    val currentUser by FixoraRepository.currentUser.collectAsState()
+    val providers by FixoraRepository.providers.collectAsState()
+    val bookings by FixoraRepository.bookings.collectAsState()
+    val ledger by FixoraRepository.ledger.collectAsState()
+    val disputes by FixoraRepository.disputes.collectAsState()
+    val settings by FixoraRepository.adminSettings.collectAsState()
     val registeredUsers by FixoraRepository.registeredUsers.collectAsState()
-    val gigs            by FixoraRepository.gigs.collectAsState()
-    val jobRequests     by FixoraRepository.jobRequests.collectAsState()
-
-    var selectedTab by remember { mutableStateOf(AdminTab.OVERVIEW) }
-
-    // ── Computed KPIs ──────────────────────────────────────────────────────────
-    val pendingVerifications = providers.filter { it.documentStatus == VerificationStatus.PENDING }
-    val openDisputes         = disputes.filter { it.status == DisputeStatus.OPEN }
-    val activeBookings       = bookings.filter {
-        it.status !in listOf(
-            BookingStatus.COMPLETED, BookingStatus.PAYMENT_SETTLED,
-            BookingStatus.CUSTOMER_CANCELLED, BookingStatus.PROVIDER_CANCELLED,
-            BookingStatus.REFUNDED, BookingStatus.EXPIRED
-        )
+    val requests by FixoraRepository.jobRequests.collectAsState()
+    val users = (registeredUsers + currentUser).distinctBy { it.id }
+    var tab by rememberSaveable { mutableStateOf(AdminTab.OVERVIEW) }
+    var days by rememberSaveable { mutableIntStateOf(30) }
+    val zone = ZoneId.systemDefault()
+    val today = LocalDate.now(zone)
+    val startDate = today.minusDays((days - 1).toLong())
+    val recent = bookings.filter {
+        val date = Instant.ofEpochMilli(it.createdAt).atZone(zone).toLocalDate()
+        date >= startDate && date <= today
     }
-    val completedBookings    = bookings.filter { it.status == BookingStatus.PAYMENT_SETTLED || it.status == BookingStatus.COMPLETED }
+    val settled = recent.filter { it.status == BookingStatus.PAYMENT_SETTLED }
+    val revenue = settled.sumOf { it.platformCommissionAed }
+    val pending = providers.count { it.documentStatus == VerificationStatus.PENDING }
+    val openDisputes = disputes.count { it.status == DisputeStatus.OPEN }
+    val dailyBookings = (0 until days).map { day ->
+        val date = startDate.plusDays(day.toLong())
+        recent.count { Instant.ofEpochMilli(it.createdAt).atZone(zone).toLocalDate() == date }.toFloat()
+    }
+    val dailyRevenue = (0 until days).map { day ->
+        val date = startDate.plusDays(day.toLong())
+        settled.filter { Instant.ofEpochMilli(it.createdAt).atZone(zone).toLocalDate() == date }
+            .sumOf { it.platformCommissionAed }.toFloat()
+    }
 
-    val totalGMV        = bookings.sumOf { it.agreedFinalPriceAed }
-    val totalCommission = bookings.sumOf { it.platformCommissionAed }
-    val totalPayouts    = bookings.sumOf { it.providerEarningsAed }
-
-    val onlineProviders   = providers.count { it.isOnline }
-    val verifiedProviders = providers.count { it.isVerified && it.documentStatus == VerificationStatus.APPROVED }
-    val avgProviderRating = if (providers.isNotEmpty()) providers.map { it.rating }.average() else 0.0
-
-    Scaffold(
-        topBar = {
-            FixoraTopBar(
-                title = "Admin Console",
-                subtitle = "${currentUser.name} · Root Administrator",
-                canNavigateBack = true,
-                onNavigateBack = onNavigateBack
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(FixoraPageBrush)
-        ) {
-            // ── Tab Row ────────────────────────────────────────────────────────
-            _AdminTabRow(selectedTab = selectedTab, onTabSelected = { selectedTab = it })
-
-            // ── Tab Content ────────────────────────────────────────────────────
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                when (selectedTab) {
-                    AdminTab.OVERVIEW -> {
-                        // Revenue header
-                        item {
-                            _RevenueHeroCard(
-                                totalCommission = totalCommission,
-                                totalGMV = totalGMV,
-                                totalPayouts = totalPayouts,
-                                commissionRate = adminSettings.commissionPercentage
-                            )
-                        }
-                        // Alert row
-                        item {
-                            _AlertRow(
-                                pendingCount = pendingVerifications.size,
-                                disputeCount = openDisputes.size,
-                                onViewVerifications = onViewVerifications,
-                                onViewDisputes = onViewDisputes
-                            )
-                        }
-                        // Platform stats grid
-                        item {
-                            _SectionHeader("Platform Stats")
-                        }
-                        item {
-                            _StatsGrid(
-                                bookingCount       = bookings.size,
-                                activeCount        = activeBookings.size,
-                                completedCount     = completedBookings.size,
-                                providerCount      = providers.size,
-                                onlineProviders    = onlineProviders,
-                                userCount          = registeredUsers.size,
-                                gigCount           = gigs.size,
-                                openJobCount       = jobRequests.count { it.status == JobRequestStatus.OPEN }
-                            )
-                        }
-                        // Booking status breakdown
-                        item { _SectionHeader("Booking Status Breakdown") }
-                        item { _BookingBreakdownBar(bookings) }
-                        // Quick actions
-                        item { _SectionHeader("Quick Actions") }
-                        item {
-                            _QuickActionsRow(
-                                onViewVerifications = onViewVerifications,
-                                onViewDisputes = onViewDisputes,
-                                onViewCategories = onViewCategories
-                            )
-                        }
-                        // Top providers
-                        if (providers.isNotEmpty()) {
-                            item { _SectionHeader("Top Providers") }
-                            items(providers.sortedByDescending { it.rating }.take(5)) { prov ->
-                                _ProviderRow(prov, onApprove = {
-                                    FixoraRepository.adminSetVerificationStatus(prov.id, VerificationStatus.APPROVED)
-                                })
+    BoxWithConstraints(Modifier.fillMaxSize().background(FixoraPageBrush).safeDrawingPadding()) {
+        val wide = maxWidth >= 840.dp
+        Row(Modifier.fillMaxSize()) {
+            if (wide) {
+                Surface(Modifier.width(220.dp).fillMaxHeight(), color = FixoraSurface, border = BorderStroke(1.dp, FixoraBorder)) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            FixoraBrandMark(Modifier.size(36.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text("Fixora", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                Text("Admin portal", color = FixoraTextSecondary, style = MaterialTheme.typography.bodySmall)
                             }
                         }
+                        Spacer(Modifier.height(16.dp))
+                        AdminTab.entries.forEach { item -> AdminNavigationItem(item, tab == item) { tab = item } }
+                        HorizontalDivider(color = FixoraDivider)
+                        TextButton(onClick = onViewCategories) { Text("Services and categories") }
+                        TextButton(onClick = onViewJobRequests) { Text("Projects and bids") }
+                        TextButton(onClick = onViewVerifications) { Text("Provider verification") }
+                        TextButton(onClick = onViewDisputes) { Text("Disputes and support") }
+                        Spacer(Modifier.height(16.dp))
+                        TextButton(onClick = onNavigateBack) { Text("Back to app") }
                     }
-
-                    AdminTab.BOOKINGS -> {
-                        item { _SectionHeader("All Bookings (${bookings.size})") }
-                        if (bookings.isEmpty()) {
-                            item { _EmptyState("No bookings yet", "They'll appear here as customers place orders.") }
-                        } else {
-                            items(bookings.sortedByDescending { it.createdAt }) { booking ->
-                                _BookingAdminCard(booking)
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onNavigateBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                    Column(Modifier.weight(1f)) {
+                        Text(tab.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("Fixora admin portal", color = FixoraTextSecondary, style = MaterialTheme.typography.labelMedium)
+                    }
+                    Box(Modifier.size(36.dp).background(FixoraAction, CircleShape), contentAlignment = Alignment.Center) {
+                        Text(currentUser.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (!wide) {
+                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(AdminTab.entries) { item ->
+                            FilterChip(selected = tab == item, onClick = { tab = item }, label = { Text(item.title) })
+                        }
+                    }
+                }
+                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    when (tab) {
+                        AdminTab.OVERVIEW -> {
+                            item {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Platform overview", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        Text("Includes demo records", style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
+                                    }
+                                    var menu by remember { mutableStateOf(false) }
+                                    Box {
+                                        OutlinedButton(onClick = { menu = true }) { Text("Last " + days + " days") }
+                                        DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                                            listOf(7, 30, 90).forEach { count ->
+                                                DropdownMenuItem(text = { Text("Last " + count + " days") }, onClick = { days = count; menu = false })
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                val metrics = listOf(
+                                    AdminMetric("Known users", users.size.toString(), Icons.Default.People, FixoraNeonPink),
+                                    AdminMetric("Service providers", providers.size.toString(), Icons.Default.BusinessCenter, FixoraViolet),
+                                    AdminMetric("Bookings · " + days + " days", recent.size.toString(), Icons.Default.CalendarMonth, FixoraBlue),
+                                    AdminMetric("Commission · " + days + " days", "PKR " + "%,.0f".format(revenue), Icons.Default.Payments, FixoraWarning)
+                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    metrics.chunked(if (wide) 4 else 2).forEach { row ->
+                                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { row.forEach { MetricCard(it, Modifier.weight(1f)) } }
+                                    }
+                                }
+                            }
+                            item {
+                                AdminPanel("Booking activity") {
+                                    Text(recent.size.toString() + " bookings in this period", color = FixoraTextSecondary, style = MaterialTheme.typography.bodySmall)
+                                    ActivityChart(dailyBookings, FixoraNeonPink, "Daily booking counts")
+                                    ChartDates(startDate, today)
+                                }
+                            }
+                            item {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    AdminAction("Approve providers", Icons.Default.VerifiedUser, pending, Modifier.weight(1f), onViewVerifications)
+                                    AdminAction("Resolve disputes", Icons.Default.SupportAgent, openDisputes, Modifier.weight(1f), onViewDisputes)
+                                }
+                            }
+                            item { AdminPanel("User types") { UserTypes(users) } }
+                            item {
+                                AdminPanel("Commission overview") {
+                                    Text("PKR " + "%,.0f".format(revenue) + " settled", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = FixoraWarning)
+                                    ActivityChart(dailyRevenue, FixoraWarning, "Daily settled platform commission in PKR")
+                                    ChartDates(startDate, today)
+                                }
+                            }
+                            item {
+                                AdminPanel("Bookings by location") {
+                                    val locations = recent.groupingBy { it.address.emirate.ifBlank { "Unspecified" } }.eachCount()
+                                    if (locations.isEmpty()) Text("No bookings in this period.", color = FixoraTextSecondary)
+                                    locations.entries.sortedByDescending { it.value }.take(6).forEach { (location, count) ->
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Text(location, modifier = Modifier.weight(1f))
+                                            Text(count.toString(), color = FixoraViolet, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    AdminAction("Manage services", Icons.Default.Category, null, Modifier.weight(1f), onViewCategories)
+                                    AdminAction("Projects and bids", Icons.Default.Work, requests.count { it.status == JobRequestStatus.OPEN }, Modifier.weight(1f), onViewJobRequests)
+                                }
+                            }
+                            item {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Recent bookings", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    TextButton(onClick = { tab = AdminTab.BOOKINGS }) { Text("View all") }
+                                }
+                            }
+                            if (recent.isEmpty()) item { _EmptyState("No bookings", "Bookings in the selected period appear here.") }
+                            items(recent.sortedByDescending { it.createdAt }.take(5), key = { it.id }) { booking ->
+                                Box(Modifier.clickable { onViewBooking(booking.id) }) { _BookingAdminCard(booking) }
                             }
                         }
-                    }
-
-                    AdminTab.PROVIDERS -> {
-                        item {
-                            _ProviderStatsRow(
-                                total    = providers.size,
-                                online   = onlineProviders,
-                                verified = verifiedProviders,
-                                avgRating = avgProviderRating
-                            )
-                        }
-                        item { _SectionHeader("All Providers (${providers.size})") }
-                        items(providers.sortedByDescending { it.completedJobs }) { prov ->
-                            _ProviderDetailCard(
-                                provider = prov,
-                                onApprove = { FixoraRepository.adminSetVerificationStatus(prov.id, VerificationStatus.APPROVED) },
-                                onReject  = { FixoraRepository.adminSetVerificationStatus(prov.id, VerificationStatus.REJECTED) }
-                            )
-                        }
-                    }
-
-                    AdminTab.FINANCE -> {
-                        item {
-                            _FinanceSummaryCard(
-                                totalGMV        = totalGMV,
-                                totalCommission = totalCommission,
-                                totalPayouts    = totalPayouts,
-                                commissionRate  = adminSettings.commissionPercentage,
-                                emergencySurge  = adminSettings.emergencySurgeFeeAed,
-                                vat             = adminSettings.vatRatePercentage
-                            )
-                        }
-                        item { _SectionHeader("Live Financial Ledger (${ledger.size} entries)") }
-                        if (ledger.isEmpty()) {
-                            item { _EmptyState("Ledger is empty", "Double-entry records will appear as transactions occur.") }
-                        } else {
-                            items(ledger.sortedByDescending { it.timestamp }) { entry ->
-                                _LedgerRow(entry)
+                        AdminTab.USERS -> {
+                            item { _SectionHeader("Known users (" + users.size + ")") }
+                            items(users, key = { it.id }) { user ->
+                                Surface(shape = MaterialTheme.shapes.medium, color = FixoraSurface) {
+                                    ListItem(
+                                        headlineContent = { Text(user.name) },
+                                        supportingContent = { Text(user.email) },
+                                        trailingContent = { Text(user.role.displayName(), style = MaterialTheme.typography.labelSmall, color = FixoraPrimary) },
+                                        colors = ListItemDefaults.colors(containerColor = FixoraSurface)
+                                    )
+                                }
                             }
+                        }
+                        AdminTab.BOOKINGS -> {
+                            item { _SectionHeader("All bookings (" + bookings.size + ")") }
+                            if (bookings.isEmpty()) item { _EmptyState("No bookings yet", "Bookings appear here when customers place orders.") }
+                            items(bookings.sortedByDescending { it.createdAt }, key = { it.id }) { booking ->
+                                Box(Modifier.clickable { onViewBooking(booking.id) }) { _BookingAdminCard(booking) }
+                            }
+                        }
+                        AdminTab.PROVIDERS -> {
+                            item { _SectionHeader("Service providers (" + providers.size + ")") }
+                            if (providers.isEmpty()) item { _EmptyState("No providers yet", "Provider applications appear here.") }
+                            items(providers.sortedByDescending { it.completedJobs }, key = { it.id }) { provider ->
+                                _ProviderDetailCard(
+                                    provider,
+                                    onApprove = { FixoraRepository.adminSetVerificationStatus(provider.id, VerificationStatus.APPROVED) },
+                                    onReject = { FixoraRepository.adminSetVerificationStatus(provider.id, VerificationStatus.REJECTED) }
+                                )
+                            }
+                        }
+                        AdminTab.FINANCE -> {
+                            item {
+                                _FinanceSummaryCard(
+                                    totalGMV = bookings.sumOf { it.agreedFinalPriceAed },
+                                    totalCommission = bookings.filter { it.status == BookingStatus.PAYMENT_SETTLED }.sumOf { it.platformCommissionAed },
+                                    totalPayouts = bookings.filter { it.status == BookingStatus.PAYMENT_SETTLED }.sumOf { it.providerEarningsAed },
+                                    commissionRate = settings.commissionPercentage,
+                                    emergencySurge = settings.emergencySurgeFeeAed,
+                                    vat = settings.vatRatePercentage
+                                )
+                            }
+                            item { _SectionHeader("Financial ledger (" + ledger.size + ")") }
+                            if (ledger.isEmpty()) item { _EmptyState("No transactions", "Ledger entries appear as transactions are recorded.") }
+                            items(ledger.sortedByDescending { it.timestamp }, key = { it.id }) { _LedgerRow(it) }
                         }
                     }
                 }
@@ -217,393 +273,114 @@ fun AdminDashboardScreen(
     }
 }
 
-// ─── Tab Row ──────────────────────────────────────────────────────────────────
-@Composable
-private fun _AdminTabRow(
-    selectedTab: AdminTab,
-    onTabSelected: (AdminTab) -> Unit
-) {
-    Surface(shadowElevation = 2.dp, color = FixoraSurface) {
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(AdminTab.values()) { tab ->
-                val selected = tab == selectedTab
-                val bgColor by animateColorAsState(
-                    targetValue = if (selected) FixoraPrimary.copy(alpha = 0.12f) else Color.Transparent,
-                    animationSpec = tween(200), label = "tab_bg"
-                )
-                val contentColor by animateColorAsState(
-                    targetValue = if (selected) FixoraPrimary else FixoraTextSecondary,
-                    animationSpec = tween(200), label = "tab_fg"
-                )
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(bgColor)
-                        .clickable { onTabSelected(tab) }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(tab.icon, contentDescription = null, tint = contentColor, modifier = Modifier.size(16.dp))
-                    Text(
-                        text = tab.label,
-                        color = contentColor,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        fontSize = 13.sp
-                    )
-                }
-            }
-        }
-    }
-}
+private data class AdminMetric(val title: String, val value: String, val icon: ImageVector, val accent: Color)
 
-// ─── Revenue Hero Card ─────────────────────────────────────────────────────────
 @Composable
-private fun _RevenueHeroCard(
-    totalCommission: Double,
-    totalGMV: Double,
-    totalPayouts: Double,
-    commissionRate: Double
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(Brush.linearGradient(listOf(FixoraDarkNavy, Color(0xFF1A2642))))
-            .padding(20.dp)
+private fun MetricCard(metric: AdminMetric, modifier: Modifier) {
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        modifier.clip(shape)
+            .background(Brush.linearGradient(listOf(metric.accent.copy(alpha = 0.28f), FixoraSurface, metric.accent.copy(alpha = 0.12f))))
+            .border(BorderStroke(1.dp, metric.accent.copy(alpha = 0.65f)), shape).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column {
+        Box(Modifier.size(36.dp).background(metric.accent.copy(alpha = 0.18f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+            Icon(metric.icon, contentDescription = null, tint = metric.accent, modifier = Modifier.size(22.dp))
+        }
+        Text(metric.title, color = FixoraTextSecondary, style = MaterialTheme.typography.labelMedium)
+        Text(metric.value, color = FixoraTextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun AdminPanel(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(shape = RoundedCornerShape(20.dp), color = FixoraSurface.copy(alpha = 0.9f), border = BorderStroke(1.dp, FixoraBorder)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun AdminAction(title: String, icon: ImageVector, count: Int?, modifier: Modifier, onClick: () -> Unit) {
+    Surface(onClick = onClick, modifier = modifier, shape = MaterialTheme.shapes.large, color = FixoraSurface, border = BorderStroke(1.dp, FixoraBorder)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.TrendingUp, contentDescription = null, tint = FixoraPrimaryLight, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Platform Commission Revenue", color = Color.White.copy(alpha = 0.65f), fontSize = 12.sp)
+                Icon(icon, contentDescription = null, tint = FixoraViolet)
+                Spacer(Modifier.weight(1f))
+                if (count != null) Badge(containerColor = FixoraAction) { Text(count.toString()) }
             }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "PKR ${"%,.0f".format(totalCommission)}",
-                color = Color.White,
-                fontSize = 32.sp,
-                fontWeight = FontWeight.ExtraBold
+            Text(title, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@Composable
+private fun AdminNavigationItem(tab: AdminTab, selected: Boolean, onClick: () -> Unit) {
+    Surface(onClick = onClick, shape = MaterialTheme.shapes.medium, color = if (selected) FixoraPrimaryLight else Color.Transparent) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(tab.icon, contentDescription = null, tint = if (selected) FixoraPrimary else FixoraTextSecondary)
+            Text(tab.title, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@Composable
+private fun ActivityChart(values: List<Float>, accent: Color, description: String) {
+    val gridColor = FixoraBorder
+    Canvas(Modifier.fillMaxWidth().height(120.dp).semantics { contentDescription = description }) {
+        repeat(4) { line ->
+            val y = size.height * line / 3f
+            drawLine(gridColor.copy(alpha = 0.6f), Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
+        }
+        val maximum = (values.maxOrNull() ?: 0f).coerceAtLeast(1f)
+        val step = size.width / values.size.coerceAtLeast(1)
+        values.forEachIndexed { index, value ->
+            val height = (value / maximum * (size.height - 4.dp.toPx())).coerceAtLeast(0f)
+            if (height > 0f) drawRoundRect(
+                brush = Brush.verticalGradient(listOf(accent, accent.copy(alpha = 0.3f))),
+                topLeft = Offset(index * step + step * 0.1f, size.height - height),
+                size = Size(step * 0.8f, height),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx())
             )
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-            Spacer(Modifier.height(14.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                _HeroStat("Gross GMV",         "PKR ${"%,.0f".format(totalGMV)}",     Color.White)
-                _HeroStat("Provider Payouts",  "PKR ${"%,.0f".format(totalPayouts)}",  FixoraSuccess)
-                _HeroStat("Commission Rate",   "${commissionRate.toInt()}%",            FixoraPrimaryLight)
-            }
         }
     }
 }
 
 @Composable
-private fun _HeroStat(label: String, value: String, valueColor: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp)
-        Spacer(Modifier.height(2.dp))
-        Text(value, color = valueColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-    }
-}
-
-// ─── Alert Row ────────────────────────────────────────────────────────────────
-@Composable
-private fun _AlertRow(
-    pendingCount: Int,
-    disputeCount: Int,
-    onViewVerifications: () -> Unit,
-    onViewDisputes: () -> Unit
-) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        _AlertCard(
-            modifier = Modifier.weight(1f),
-            icon = Icons.Default.VerifiedUser,
-            iconTint = FixoraPrimary,
-            iconBg = FixoraPrimaryLight,
-            label = "Verifications",
-            count = "$pendingCount Pending",
-            countColor = if (pendingCount > 0) FixoraWarning else FixoraSuccess,
-            sub = "Review IDs & permits",
-            onClick = onViewVerifications
-        )
-        _AlertCard(
-            modifier = Modifier.weight(1f),
-            icon = Icons.Default.ReportProblem,
-            iconTint = FixoraEmergency,
-            iconBg = FixoraEmergencyLight,
-            label = "Disputes",
-            count = "$disputeCount Open",
-            countColor = if (disputeCount > 0) FixoraEmergency else FixoraSuccess,
-            sub = "Process refunds/claims",
-            onClick = onViewDisputes
-        )
+private fun ChartDates(start: LocalDate, end: LocalDate) {
+    val format = DateTimeFormatter.ofPattern("MMM d")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(start.format(format), style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
+        Text(end.format(format), style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
     }
 }
 
 @Composable
-private fun _AlertCard(
-    modifier: Modifier,
-    icon: ImageVector,
-    iconTint: Color,
-    iconBg: Color,
-    label: String,
-    count: String,
-    countColor: Color,
-    sub: String,
-    onClick: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = FixoraSurface),
-        elevation = CardDefaults.cardElevation(2.dp),
-        modifier = modifier.clickable { onClick() }
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(iconBg),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(20.dp))
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, color = FixoraTextSecondary)
-            Text(count, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = countColor)
-            Text(sub, style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
-        }
-    }
-}
-
-// ─── Stats Grid ───────────────────────────────────────────────────────────────
-@Composable
-private fun _StatsGrid(
-    bookingCount: Int,
-    activeCount: Int,
-    completedCount: Int,
-    providerCount: Int,
-    onlineProviders: Int,
-    userCount: Int,
-    gigCount: Int,
-    openJobCount: Int
-) {
-    val stats = listOf(
-        Triple("Total Bookings",  "$bookingCount",   Icons.Default.Receipt),
-        Triple("Active Now",      "$activeCount",    Icons.Default.FlashOn),
-        Triple("Completed",       "$completedCount", Icons.Default.CheckCircle),
-        Triple("Providers",       "$providerCount",  Icons.Default.Build),
-        Triple("Online Now",      "$onlineProviders",Icons.Default.Circle),
-        Triple("Customers",       "$userCount",      Icons.Default.People),
-        Triple("Gigs Live",       "$gigCount",       Icons.Default.Storefront),
-        Triple("Open Jobs",       "$openJobCount",   Icons.Default.WorkOutline)
-    )
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        stats.chunked(4).forEach { row ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { (label, value, icon) ->
-                    Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = FixoraSurface),
-                        elevation = CardDefaults.cardElevation(1.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(icon, contentDescription = null, tint = FixoraPrimary, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.height(4.dp))
-                            Text(value, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-                            Text(label, style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+private fun UserTypes(users: List<User>) {
+    val groups = listOf(UserRole.CUSTOMER to FixoraNeonPink, UserRole.PROVIDER to FixoraViolet, UserRole.ADMIN to FixoraBlue)
+    val counts = groups.map { (role, _) -> users.count { it.role == role } }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        Box(Modifier.size(104.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.fillMaxSize().semantics { contentDescription = "User roles in the current dataset" }) {
+                var angle = -90f
+                counts.forEachIndexed { index, count ->
+                    val sweep = if (users.isEmpty()) 0f else count.toFloat() / users.size * 360f
+                    drawArc(groups[index].second, angle, sweep, false, topLeft = Offset(10.dp.toPx(), 10.dp.toPx()), size = Size(size.width - 20.dp.toPx(), size.height - 20.dp.toPx()), style = Stroke(12.dp.toPx()))
+                    angle += sweep
                 }
+            }
+            Text(users.size.toString(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            groups.forEachIndexed { index, (role, color) ->
+                Text(role.displayName() + " · " + counts[index], color = color, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
 }
 
-// ─── Booking Breakdown Bar ────────────────────────────────────────────────────
-@Composable
-private fun _BookingBreakdownBar(bookings: List<Booking>) {
-    if (bookings.isEmpty()) return
-
-    val groups = listOf(
-        "Active"     to bookings.count { it.status in listOf(BookingStatus.CONFIRMED, BookingStatus.EN_ROUTE, BookingStatus.IN_PROGRESS, BookingStatus.ARRIVED) },
-        "Completed"  to bookings.count { it.status == BookingStatus.COMPLETED || it.status == BookingStatus.PAYMENT_SETTLED },
-        "Cancelled"  to bookings.count { it.status == BookingStatus.CUSTOMER_CANCELLED || it.status == BookingStatus.PROVIDER_CANCELLED },
-        "Disputed"   to bookings.count { it.status == BookingStatus.DISPUTED || it.status == BookingStatus.REFUNDED },
-        "Pending"    to bookings.count { it.status == BookingStatus.REQUESTED || it.status == BookingStatus.MATCHING }
-    ).filter { it.second > 0 }
-
-    val colors = listOf(FixoraPrimary, FixoraSuccess, FixoraEmergency, FixoraWarning, Color(0xFF8B5CF6))
-    val total = groups.sumOf { it.second }.toFloat()
-
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = FixoraSurface),
-        elevation = CardDefaults.cardElevation(2.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Segmented bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(12.dp)
-                    .clip(RoundedCornerShape(6.dp))
-            ) {
-                groups.forEachIndexed { i, (_, count) ->
-                    Box(
-                        modifier = Modifier
-                            .weight(count / total)
-                            .fillMaxHeight()
-                            .background(colors.getOrElse(i) { FixoraTextMuted })
-                    )
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            // Legend
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                groups.forEachIndexed { i, (label, count) ->
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f, fill = false)) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(colors.getOrElse(i) { FixoraTextMuted })
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Column {
-                            Text(label, fontSize = 10.sp, color = FixoraTextMuted)
-                            Text("$count", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ─── Quick Actions ─────────────────────────────────────────────────────────────
-@Composable
-private fun _QuickActionsRow(
-    onViewVerifications: () -> Unit,
-    onViewDisputes: () -> Unit,
-    onViewCategories: () -> Unit
-) {
-    val actions = listOf(
-        Triple(Icons.Default.VerifiedUser,    "Verifications",   onViewVerifications),
-        Triple(Icons.Default.ReportProblem,   "Disputes",        onViewDisputes),
-        Triple(Icons.Default.Tune,            "Config",          onViewCategories)
-    )
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        actions.forEach { (icon, label, action) ->
-            Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = FixoraSurface),
-                elevation = CardDefaults.cardElevation(2.dp),
-                modifier = Modifier.weight(1f).clickable { action() }
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp).fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(FixoraPrimaryLight),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(icon, contentDescription = null, tint = FixoraPrimary, modifier = Modifier.size(20.dp))
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(label, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                }
-            }
-        }
-    }
-}
-
-// ─── Provider Row (compact, overview) ─────────────────────────────────────────
-@Composable
-private fun _ProviderRow(provider: com.fixora.marketplace.data.model.ProviderProfile, onApprove: () -> Unit) {
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = FixoraSurface),
-        elevation = CardDefaults.cardElevation(1.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Avatar
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(FixoraPrimary.copy(alpha = 0.1f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = provider.name.first().uppercase(),
-                    fontWeight = FontWeight.Bold,
-                    color = FixoraPrimary,
-                    fontSize = 18.sp
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(provider.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
-                    if (provider.isVerified) {
-                        Spacer(Modifier.width(4.dp))
-                        Icon(Icons.Default.Verified, contentDescription = null, tint = FixoraPrimary, modifier = Modifier.size(14.dp))
-                    }
-                }
-                Text(
-                    text = "${provider.skills.take(2).joinToString(" · ")} • ${provider.completedJobs} jobs",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = FixoraTextSecondary
-                )
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Star, contentDescription = null, tint = FixoraWarning, modifier = Modifier.size(12.dp))
-                    Text(" ${provider.rating}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-                if (provider.documentStatus == VerificationStatus.PENDING) {
-                    Spacer(Modifier.height(4.dp))
-                    Surface(
-                        color = FixoraWarningLight,
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            "Pending",
-                            color = FixoraWarning,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ─── Booking Admin Card ────────────────────────────────────────────────────────
 @Composable
 private fun _BookingAdminCard(booking: Booking) {
     val (statusColor, statusBg) = when (booking.status) {
@@ -634,7 +411,7 @@ private fun _BookingAdminCard(booking: Booking) {
             Column(horizontalAlignment = Alignment.End) {
                 Surface(color = statusBg, shape = RoundedCornerShape(8.dp)) {
                     Text(
-                        booking.status.name.replace('_', ' '),
+                        booking.status.displayName(),
                         color = statusColor,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
@@ -649,38 +426,14 @@ private fun _BookingAdminCard(booking: Booking) {
     }
 }
 
-// ─── Provider Stats Row ────────────────────────────────────────────────────────
-@Composable
-private fun _ProviderStatsRow(total: Int, online: Int, verified: Int, avgRating: Double) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(
-            Triple("Total",    "$total",                        FixoraTextPrimary),
-            Triple("Online",   "$online",                       FixoraPrimary),
-            Triple("Verified", "$verified",                     FixoraSuccess),
-            Triple("Avg ★",   "${"%.1f".format(avgRating)}",   FixoraWarning)
-        ).forEach { (label, value, color) ->
-            Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = FixoraSurface),
-                elevation = CardDefaults.cardElevation(1.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(value, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = color)
-                    Text(label, fontSize = 10.sp, color = FixoraTextMuted)
-                }
-            }
-        }
-    }
-}
-
-// ─── Provider Detail Card ──────────────────────────────────────────────────────
 @Composable
 private fun _ProviderDetailCard(
     provider: com.fixora.marketplace.data.model.ProviderProfile,
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
+    val categories by FixoraRepository.categories.collectAsState()
+    val categoryNames = categories.associate { it.id to it.name }
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = FixoraSurface),
@@ -700,7 +453,7 @@ private fun _ProviderDetailCard(
                             .background(if (provider.isOnline) FixoraPrimary.copy(alpha = 0.15f) else FixoraSurfaceVariant),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(provider.name.first().uppercase(), fontWeight = FontWeight.Bold, color = FixoraPrimary, fontSize = 18.sp)
+                        Text(provider.name.take(1).uppercase(), fontWeight = FontWeight.Bold, color = FixoraPrimary, fontSize = 18.sp)
                     }
                     Spacer(Modifier.width(10.dp))
                     Column {
@@ -727,7 +480,7 @@ private fun _ProviderDetailCard(
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                text = "Skills: ${provider.skills.joinToString(" · ")}",
+                text = "Skills: ${provider.skills.joinToString(" · ") { skill -> categoryNames[skill] ?: skill.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() } }}",
                 style = MaterialTheme.typography.labelSmall,
                 color = FixoraTextSecondary
             )
@@ -787,7 +540,6 @@ private fun _StatusChip(status: VerificationStatus) {
     }
 }
 
-// ─── Finance Summary ───────────────────────────────────────────────────────────
 @Composable
 private fun _FinanceSummaryCard(
     totalGMV: Double,
@@ -860,7 +612,7 @@ private fun _LedgerRow(entry: com.fixora.marketplace.data.model.LedgerEntry) {
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(entry.description, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("Ref: ${entry.referenceId}  ·  ${entry.type.name.replace('_', ' ')}", style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
+                Text("Ref: ${entry.referenceId}  ·  ${entry.type.displayName()}", style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(

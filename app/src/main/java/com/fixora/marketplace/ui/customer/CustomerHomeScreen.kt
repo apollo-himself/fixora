@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -20,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,8 +30,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import com.fixora.marketplace.R
+import androidx.compose.ui.semantics.Role
 import com.fixora.marketplace.ui.navigation.Screen
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -53,6 +55,33 @@ private data class ScreenshotCategoryItem(
     val iconTint: Color,
     val bgTint: Color
 )
+
+
+private enum class HomeServiceGroup(
+    val title: String,
+    val icon: ImageVector,
+    val accent: Color,
+    val gradientTop: Color,
+    val gradientBottom: Color,
+    val highlight: Color
+) {
+    LOCAL(
+        "Local Services", Icons.Default.LocationOn, FixoraNeonPink,
+        Color(0xFFFF267D), Color(0xFF57052C), Color(0xFFFFA3C7)
+    ),
+    DIGITAL(
+        "Digital Services", Icons.Default.Computer, FixoraBlue,
+        Color(0xFF167BDD), Color(0xFF061D66), Color(0xFF9FDFFF)
+    ),
+    PROFESSIONAL(
+        "Professional Services", Icons.Default.BusinessCenter, FixoraViolet,
+        Color(0xFF883BE5), Color(0xFF2B095D), Color(0xFFE4C4FF)
+    ),
+    LEARNING(
+        "Learning & Training", Icons.Default.School, FixoraWarning,
+        Color(0xFFE88A0A), Color(0xFF623002), Color(0xFFFFDF9E)
+    )
+}
 
 private val gridCategories = listOf(
     ScreenshotCategoryItem("HOME_REPAIR", "Home\nRepair", Icons.Default.Handyman, FixoraNeonPink, Color(0xFFFAF5FF)),
@@ -107,6 +136,20 @@ fun CustomerHomeScreen(
 
     val featuredProviders = providers.filter { it.isVerified && it.isOnline }
     val categories by FixoraRepository.categories.collectAsState()
+    var selectedGroup by rememberSaveable { mutableStateOf<HomeServiceGroup?>(null) }
+    val group = selectedGroup
+    val visibleCategories = if (group == null) {
+        gridCategories
+    } else {
+        val matching = categories.filter { it.serviceGroup == group.title }
+        val matchingIds = matching.mapTo(mutableSetOf()) { it.id }
+        val curated = gridCategories.filter { it.id in matchingIds }
+        val curatedIds = curated.mapTo(mutableSetOf()) { it.id }
+        curated + matching.filterNot { it.id in curatedIds }.map {
+            ScreenshotCategoryItem(it.id, it.name, group.icon, group.accent, FixoraPrimaryLight)
+        }
+    }
+
     val context = LocalContext.current
     var showLanguageDialog by remember { mutableStateOf(false) }
 
@@ -155,6 +198,52 @@ fun CustomerHomeScreen(
                 )
             }
 
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HomeServiceGroup.entries.forEach { serviceGroup ->
+                        val selected = group == serviceGroup
+                        val shape = RoundedCornerShape(14.dp)
+                        Column(
+                            modifier = Modifier.weight(1f)
+                                .heightIn(min = 82.dp)
+                                .clip(shape)
+                                .background(Brush.verticalGradient(listOf(serviceGroup.gradientTop, serviceGroup.gradientBottom)))
+                                .border(
+                                    width = if (selected) 2.dp else 1.dp,
+                                    brush = Brush.verticalGradient(
+                                        listOf(
+                                            if (selected) Color.White else serviceGroup.highlight,
+                                            serviceGroup.gradientTop.copy(alpha = if (selected) 1f else 0.6f)
+                                        )
+                                    ),
+                                    shape = shape
+                                )
+                                .selectable(
+                                    selected = selected,
+                                    role = Role.Tab,
+                                    onClick = { selectedGroup = if (selected) null else serviceGroup }
+                                )
+                                .padding(horizontal = 3.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically)
+                        ) {
+                            Icon(serviceGroup.icon, contentDescription = null, tint = serviceGroup.highlight, modifier = Modifier.size(20.dp))
+                            Text(
+                                serviceGroup.title,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            }
+
             // Active booking banner if applicable
             if (activeBooking != null) {
                 item {
@@ -178,10 +267,12 @@ fun CustomerHomeScreen(
                         )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable(onClick = onSearchClick)
+                            modifier = Modifier.clickable {
+                                if (group == null) onSearchClick() else selectedGroup = null
+                            }
                         ) {
                             Text(
-                                text = "View All",
+                                text = if (group == null) "View All" else "Show all",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = FixoraPrimary
@@ -197,20 +288,19 @@ fun CustomerHomeScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Two rows of category tiles scroll together.
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        val chunked = gridCategories.chunked(2)
-                        items(chunked) { pair ->
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                pair.forEach { cat ->
-                                    ScreenshotCategoryIconCard(
-                                        category = cat,
-                                        onClick = {
-                                            if (cat.id == "ALL") onSearchClick() else onCategoryClick(cat.id)
+                    if (visibleCategories.isEmpty()) {
+                        Text("No categories in this group yet.", color = FixoraTextSecondary)
+                    } else {
+                        key(group) {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                items(visibleCategories.chunked(2), key = { it.first().id }) { pair ->
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        pair.forEach { category ->
+                                            ScreenshotCategoryIconCard(category) {
+                                                if (category.id == "ALL") onSearchClick() else onCategoryClick(category.id)
+                                            }
                                         }
-                                    )
+                                    }
                                 }
                             }
                         }
@@ -415,7 +505,7 @@ fun CustomerHomeScreen(
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Fixora Admin Console", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                                Text("three3bross@gmail.com • Operational Control", fontSize = 11.sp, color = Color.White.copy(alpha = 0.7f))
+                                Text("Manage your marketplace", fontSize = 11.sp, color = Color.White.copy(alpha = 0.7f))
                             }
                             Surface(color = FixoraAction, shape = RoundedCornerShape(8.dp)) {
                                 Text("OPEN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
@@ -520,11 +610,29 @@ private fun CosmicHeroHeader(
                 Text("Get things done.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = FixoraPrimary)
                 Text("Find skilled people worldwide.", style = MaterialTheme.typography.bodySmall, color = FixoraTextSecondary)
             }
-            Image(
-                painter = painterResource(R.drawable.fixora_globe),
-                contentDescription = null,
-                modifier = Modifier.size(100.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .padding(start = 10.dp)
+                    .size(76.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(
+                        Brush.radialGradient(
+                            listOf(Color(0xFF3D2777), Color(0xFF20143F), FixoraBackground)
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Public,
+                    contentDescription = "Find skilled professionals worldwide",
+                    tint = Color(0xFFD6C8FF),
+                    modifier = Modifier.size(44.dp)
+                )
+                Box(
+                    Modifier.align(Alignment.BottomEnd).padding(end = 15.dp, bottom = 14.dp)
+                        .size(8.dp).clip(CircleShape).background(FixoraNeonPink)
+                )
+            }
         }
 
         OutlinedButton(
@@ -545,18 +653,28 @@ private fun ScreenshotCategoryIconCard(
     category: ScreenshotCategoryItem,
     onClick: () -> Unit
 ) {
+    val shape = RoundedCornerShape(14.dp)
+    val isDark = LocalFixoraColors.current.isDark
+    val rimLight = if (isDark) Color(0xFFBBA6FF) else Color(0xFF8765BF)
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = FixoraSurface,
-        border = BorderStroke(1.dp, FixoraBorder),
+        onClick = onClick,
+        shape = shape,
+        color = FixoraSurface.copy(alpha = if (isDark) 0.78f else 0.92f),
+        border = BorderStroke(
+            1.dp,
+            Brush.linearGradient(
+                listOf(rimLight.copy(alpha = 0.32f), rimLight.copy(alpha = 0.09f), rimLight.copy(alpha = 0.23f))
+            )
+        ),
         modifier = Modifier
             .width(82.dp)
             .height(76.dp)
-            .clickable(onClick = onClick)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .border(3.dp, rimLight.copy(alpha = 0.035f), shape)
+                .border(5.dp, rimLight.copy(alpha = 0.018f), shape)
                 .padding(4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
@@ -565,7 +683,7 @@ private fun ScreenshotCategoryIconCard(
                 modifier = Modifier
                     .size(30.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (LocalFixoraColors.current.isDark) category.iconTint.copy(alpha = 0.18f) else category.bgTint),
+                    .background(if (isDark) category.iconTint.copy(alpha = 0.18f) else category.bgTint),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(

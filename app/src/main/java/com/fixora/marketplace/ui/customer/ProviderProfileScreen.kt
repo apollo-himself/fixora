@@ -30,7 +30,7 @@ fun ProviderProfileScreen(
     val providers by FixoraRepository.providers.collectAsState()
     val reviews by FixoraRepository.reviews.collectAsState()
 
-    val provider = providers.firstOrNull { it.id == providerId } ?: providers.first()
+    val provider = providers.firstOrNull { it.id == providerId } ?: run { Text("Provider unavailable or loading."); return }
     val providerReviews = reviews.filter { it.providerId == provider.id }
 
     Scaffold(

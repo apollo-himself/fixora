@@ -38,7 +38,7 @@ fun CustomerChatScreen(
     val allMessages by FixoraRepository.chatMessages.collectAsState()
 
     val booking = bookings.firstOrNull { it.id == bookingId }
-    val bookingMessages = allMessages.filter { it.bookingId == bookingId }
+    val bookingMessages = allMessages.filter { it.bookingId == bookingId }.sortedWith(compareBy<ChatMessage> { it.timestamp }.thenBy { it.id })
 
     var textInput by remember { mutableStateOf("") }
 

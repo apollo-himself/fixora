@@ -14,7 +14,7 @@ enum class AppLanguage(
     val isRtl: Boolean
 ) {
     ENGLISH("en", "English", "English", "🇬🇧", false),
-    URDU("ur", "Urdu", "اردو", "🇵🇰", true),
+    URDU("ur", "Urdu", "اردو", "🌐", true),
     ARABIC("ar", "Arabic", "العربية", "🇸🇦", true);
 
     val layoutDirection: LayoutDirection

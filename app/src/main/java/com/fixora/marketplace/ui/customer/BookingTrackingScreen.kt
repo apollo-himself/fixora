@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fixora.marketplace.data.model.BookingStatus
+import com.fixora.marketplace.data.model.displayName
 import com.fixora.marketplace.data.repository.FixoraRepository
 import com.fixora.marketplace.ui.components.FixoraTopBar
 import com.fixora.marketplace.ui.components.SimulatedLiveTrackingMap
@@ -543,7 +544,7 @@ fun BookingTrackingScreen(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = event.status.name.replace('_', ' '),
+                            text = event.status.displayName(),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )

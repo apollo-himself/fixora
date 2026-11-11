@@ -27,7 +27,7 @@ fun ProviderIncomingRequestsScreen(
     val bookings by FixoraRepository.bookings.collectAsState()
 
     val myProfile = providers.firstOrNull { it.userId == currentUser.id }
-        ?: providers.firstOrNull { it.id == "PROV-01" } ?: providers.first()
+        ?: run { Text("Your provider profile is loading or unavailable."); return }
 
     val requests = bookings.filter { b ->
         (b.status == BookingStatus.REQUESTED || b.status == BookingStatus.MATCHING) &&

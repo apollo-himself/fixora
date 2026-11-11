@@ -35,6 +35,9 @@ import com.fixora.marketplace.data.model.UserRole
 import com.fixora.marketplace.data.repository.FixoraRepository
 import com.fixora.marketplace.data.auth.GoogleAuthHelper
 import com.fixora.marketplace.data.auth.AuthResult
+import com.fixora.marketplace.data.auth.FirebaseAuthService
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import com.fixora.marketplace.ui.components.FixoraBrandMark
 import com.fixora.marketplace.ui.theme.*
@@ -258,6 +261,10 @@ fun LoginScreen(
     var bioInput by remember { mutableStateOf("") }
 
     // Log In State
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var emailLoading by remember { mutableStateOf(false) }
+    var authMessage by remember { mutableStateOf<String?>(null) }
     var loginEmailInput by rememberSaveable { mutableStateOf("") }
     var loginEmailError by remember { mutableStateOf<String?>(null) }
 
@@ -270,29 +277,43 @@ fun LoginScreen(
             googleLoading = true
             googleError = null
             val result = GoogleAuthHelper.signIn(context)
-            googleLoading = false
             when (result) {
                 is AuthResult.Success -> {
                     val data = result.data
-                    val existing = FixoraRepository.findUserByEmail(data.email)
-                    val user = if (existing != null) {
-                        FixoraRepository.switchUser(existing)
-                        existing
-                    } else {
-                        FixoraRepository.registerUser(
-                            name = data.name,
-                            email = data.email,
+                    try {
+                        val user = FixoraRepository.registerUser(
+                            name = data.name, email = data.email,
                             role = if (selectedTab == 0) selectedRole else UserRole.CUSTOMER,
-                            city = selectedCity.trim(),
-                            area = areaInput.trim(),
-                            categories = selectedCategories.toList(),
-                            bio = bioInput,
-                            hourlyRate = hourlyRateInput.toDoubleOrNull() ?: 1500.0,
-                            isVerified = true
-                        )
+                            city = selectedCity.trim(), area = areaInput.trim(),
+                            categories = selectedCategories.toList(), bio = bioInput,
+                            hourlyRate = hourlyRateInput.toDoubleOrNull() ?: 1500.0)
+                        AppPreferences.saveUserSession(context, user)
+                        if (user.isVerified) onLoginSuccess(user.role) else onVerifyEmail(user.email)
+                    } catch (e: CancellationException) { throw e
+                    } catch (e: Exception) {
+                        // Google sign-in already completed. Keep Auth usable while the
+                        // Firestore user-profile rules are being deployed.
+                        val authenticated = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                        if (authenticated != null && authenticated.uid == data.uid) {
+                            val role = if (selectedTab == 0) selectedRole else UserRole.CUSTOMER
+                            val fallback = com.fixora.marketplace.data.model.User(
+                                id = data.uid, name = data.name, email = data.email,
+                                phone = "", role = role, isVerified = authenticated.isEmailVerified)
+                            FixoraRepository.switchUser(fallback)
+                            if (fallback.isVerified) {
+                                AppPreferences.saveUserSession(context, fallback, isEmailVerified = true)
+                                FixoraRepository.connectBackend()
+                                onLoginSuccess(fallback.role)
+                            } else {
+                                AppPreferences.saveUserSession(context, fallback, isEmailVerified = false)
+                                AppPreferences.setPendingVerifyEmail(context, fallback.email)
+                                onVerifyEmail(fallback.email)
+                            }
+                        } else {
+                            googleError = "Could not finish sign-in. Please try again."
+                        }
                     }
-                    AppPreferences.saveUserSession(context, user, isEmailVerified = true)
-                    onLoginSuccess(user.role)
+
                 }
                 is AuthResult.Error -> {
                     if (result.message != "CANCELLED") {
@@ -300,6 +321,7 @@ fun LoginScreen(
                     }
                 }
             }
+            googleLoading = false
         }
     }
 
@@ -392,6 +414,37 @@ fun LoginScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                OutlinedTextField(
+                    value = password, onValueChange = { password = it; authMessage = null },
+                    label = { Text("Password") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (creatingAccount) {
+                    OutlinedTextField(
+                        value = confirmPassword, onValueChange = { confirmPassword = it },
+                        label = { Text("Confirm password") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    TextButton(enabled = !emailLoading && !googleLoading, onClick = {
+                        if (!isValidEmail(loginEmailInput.trim())) {
+                            loginEmailError = "Enter your email address first."
+                        } else scope.launch {
+                            emailLoading = true
+                            when (val result = FirebaseAuthService.sendPasswordReset(loginEmailInput)) {
+                                is AuthResult.Success -> authMessage = "If an account exists, a password reset link has been sent."
+                                is AuthResult.Error -> authMessage = result.message
+                            }
+                            emailLoading = false
+                        }
+                    }) { Text("Forgot password?") }
+                }
+                authMessage?.let { Text(it, color = FixoraEmergency, style = MaterialTheme.typography.bodySmall) }
+
                 if (creatingAccount) {
                     var showDetails by rememberSaveable { mutableStateOf(false) }
                     TextButton(onClick = { showDetails = !showDetails }) {
@@ -451,49 +504,77 @@ fun LoginScreen(
                             return@Button
                         }
 
-                        val user = if (creatingAccount) {
-                            FixoraRepository.registerUser(
-                                name = nameInput.trim(),
-                                email = email,
-                                role = selectedRole,
-                                city = selectedCity.trim(),
-                                area = areaInput.trim(),
-                                category = selectedCategories.first(),
-                                categories = selectedCategories.toList(),
-                                bio = bioInput,
-                                hourlyRate = hourlyRateInput.toDoubleOrNull() ?: 1500.0
-                            )
-                        } else {
-                            val existing = FixoraRepository.findUserByEmail(email)
-                            if (existing != null) {
-                                FixoraRepository.switchUser(existing)
-                                existing
-                            } else {
-                                FixoraRepository.registerUser(
-                                    name = email.substringBefore("@").replace('.', ' ').replaceFirstChar { it.uppercase() },
-                                    email = email,
-                                    role = UserRole.CUSTOMER
-                                )
-                            }
+                        if (password.isBlank() || (creatingAccount && password.length < 6)) {
+                            authMessage = "Enter a password of at least 6 characters."
+                            return@Button
                         }
-                        AppPreferences.saveUserSession(context, user)
-                        if (user.isVerified) {
-                            onLoginSuccess(user.role)
-                        } else {
-                            AppPreferences.setPendingVerifyEmail(context, user.email)
-                            onVerifyEmail(user.email)
+                        if (creatingAccount && password != confirmPassword) {
+                            authMessage = "Passwords do not match."
+                            return@Button
+                        }
+                        scope.launch {
+                            emailLoading = true
+                            authMessage = null
+                            try {
+                                val result = if (creatingAccount) FirebaseAuthService.signUp(email, password)
+                                    else FirebaseAuthService.signIn(email, password)
+                                when (result) {
+                                    is AuthResult.Error -> authMessage = result.message
+                                    is AuthResult.Success -> {
+                                        val user = FixoraRepository.registerUser(
+                                            name = if (creatingAccount) nameInput.trim() else result.data.displayName.orEmpty(),
+                                            email = email,
+                                            role = if (creatingAccount) selectedRole else UserRole.CUSTOMER,
+                                            city = selectedCity.trim(), area = areaInput.trim(),
+                                            categories = selectedCategories.toList(), bio = bioInput,
+                                            hourlyRate = hourlyRateInput.toDoubleOrNull() ?: 1500.0)
+                                        AppPreferences.saveUserSession(context, user)
+                                        password = ""; confirmPassword = ""
+                                        if (user.isVerified) onLoginSuccess(user.role) else {
+                                            AppPreferences.setPendingVerifyEmail(context, user.email)
+                                            onVerifyEmail(user.email)
+                                        }
+                                    }
+                                }
+                            } catch (e: CancellationException) { throw e
+                            } catch (e: Exception) {
+                                // Firebase Authentication has already succeeded. A Firestore rules
+                                // error must not strand a valid user on the sign-in screen.
+                                val firebaseUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                                if (firebaseUser != null) {
+                                    val verified = firebaseUser.isEmailVerified
+                                    val fallback = com.fixora.marketplace.data.model.User(
+                                        id = firebaseUser.uid,
+                                        name = firebaseUser.displayName ?: if (creatingAccount) nameInput.trim() else email.substringBefore("@"),
+                                        email = firebaseUser.email ?: email,
+                                        phone = "",
+                                        role = if (creatingAccount) selectedRole else UserRole.CUSTOMER,
+                                        isVerified = verified
+                                    )
+                                    FixoraRepository.switchUser(fallback)
+                                    AppPreferences.saveUserSession(context, fallback, isEmailVerified = verified)
+                                    password = ""; confirmPassword = ""
+                                    if (verified) onLoginSuccess(fallback.role) else {
+                                        AppPreferences.setPendingVerifyEmail(context, fallback.email)
+                                        onVerifyEmail(fallback.email)
+                                    }
+                                    authMessage = null
+                                } else {
+                                    authMessage = "Sign-in failed: " + (e.localizedMessage ?: "Please try again.")
+                                }
+                            } finally { emailLoading = false }
                         }
                     },
-                    enabled = !googleLoading,
+                    enabled = !googleLoading && !emailLoading,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = FixoraAction)
                 ) {
-                    Text(if (!creatingAccount) strings.signInBtn else if (selectedRole == UserRole.PROVIDER) strings.registerFreelancerBtn else strings.createAccountBtn)
+                    Text(if (emailLoading) "Connecting…" else if (!creatingAccount) strings.signInBtn else if (selectedRole == UserRole.PROVIDER) strings.registerFreelancerBtn else strings.createAccountBtn)
                 }
 
                 OutlinedButton(
                     onClick = handleGoogleSignIn,
-                    enabled = !googleLoading,
+                    enabled = !googleLoading && !emailLoading,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                 ) {
                     if (googleLoading) {
@@ -507,8 +588,8 @@ fun LoginScreen(
                 googleError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = FixoraEmergency) }
 
                 TextButton(
-                    onClick = { selectedTab = if (creatingAccount) 1 else 0; googleError = null },
-                    enabled = !googleLoading,
+                    enabled = !emailLoading && !googleLoading,
+                    onClick = { selectedTab = if (creatingAccount) 1 else 0; googleError = null; authMessage = null; password = ""; confirmPassword = "" },
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 ) {
                     Text(if (creatingAccount) strings.signInTab else strings.createAccountTab)
@@ -516,7 +597,7 @@ fun LoginScreen(
                 if (onSkipSignIn != null) {
                     TextButton(
                         onClick = onSkipSignIn,
-                        enabled = !googleLoading,
+                        enabled = !googleLoading && !emailLoading,
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     ) { Text("Skip sign-in (debug)") }
                 }

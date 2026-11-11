@@ -2,6 +2,13 @@ package com.fixora.marketplace.ui.navigation
 
 import android.content.pm.ApplicationInfo
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import com.google.firebase.auth.FirebaseAuth
+import androidx.compose.material3.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -44,40 +51,42 @@ fun FixoraNavGraph(
         )
     }
 
-    val initialDestination = remember {
-        val savedUser = AppPreferences.getSavedUser(context)
-        if (savedUser != null) {
-            FixoraRepository.restoreUser(
-                id = savedUser.id,
-                name = savedUser.name,
-                email = savedUser.email,
-                role = savedUser.role,
-                isVerified = savedUser.isVerified
-            )
-            if (!savedUser.isVerified) {
-                val pendingEmail = AppPreferences.getPendingVerifyEmail(context)
-                if (pendingEmail != null) {
-                    Screen.VerifyEmail.createRoute(pendingEmail)
-                } else {
-                    Screen.Login.route
-                }
-            } else {
-                when (savedUser.role) {
+    var initialDestination by remember { mutableStateOf<String?>(null) }
+    var restoreError by remember { mutableStateOf<String?>(null) }
+    var restoreAttempt by remember { mutableStateOf(0) }
+    LaunchedEffect(restoreAttempt) {
+        restoreError = null
+        val authUser = FirebaseAuth.getInstance().currentUser
+        if (authUser == null) {
+            FixoraRepository.disconnectBackend()
+            initialDestination = if (AppPreferences.hasCompletedOnboarding(context)) Screen.Login.route else Screen.Splash.route
+        } else {
+            try {
+                val user = FixoraRepository.resumeSession()
+                AppPreferences.saveUserSession(context, user)
+                initialDestination = if (!user.isVerified) Screen.VerifyEmail.createRoute(user.email) else when (user.role) {
                     UserRole.CUSTOMER -> Screen.CustomerHome.route
                     UserRole.PROVIDER -> Screen.ProviderDashboard.route
                     UserRole.ADMIN -> Screen.AdminDashboard.route
                 }
-            }
-        } else if (AppPreferences.hasCompletedOnboarding(context)) {
-            Screen.Login.route
-        } else {
-            Screen.Splash.route
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { restoreError = "Could not restore your session: " + e.localizedMessage }
         }
+    }
+    if (initialDestination == null) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), verticalArrangement = Arrangement.Center) {
+            if (restoreError == null) CircularProgressIndicator() else {
+                Text(restoreError.orEmpty())
+                Button(onClick = { restoreAttempt++ }) { Text("Retry") }
+                TextButton(onClick = { AppPreferences.clearSession(context); initialDestination = Screen.Login.route }) { Text("Sign out") }
+            }
+        }
+        return
     }
 
     NavHost(
         navController = navController,
-        startDestination = initialDestination
+        startDestination = initialDestination!!
     ) {
         // Splash
         composable(Screen.Splash.route) {
@@ -108,22 +117,7 @@ fun FixoraNavGraph(
                 onNavigateBack = if (navController.previousBackStackEntry?.destination?.route == Screen.Onboarding.route) {
                     { navController.popBackStack() }
                 } else null,
-                onSkipSignIn = if (isDebuggable) {
-                    {
-                        FixoraRepository.switchUser(
-                            User(
-                                id = AppPreferences.DEBUG_GUEST_ID,
-                                name = "Debug Guest",
-                                email = "debug-guest@fixora.invalid",
-                                phone = "",
-                                role = UserRole.CUSTOMER
-                            )
-                        )
-                        navController.navigate(Screen.CustomerHome.route) {
-                            popUpTo(navController.graph.id) { inclusive = false }
-                        }
-                    }
-                } else null,
+                onSkipSignIn = null,
                 onLoginSuccess = { role ->
                     val destination = when (role) {
                         UserRole.CUSTOMER -> Screen.CustomerHome.route
@@ -153,6 +147,7 @@ fun FixoraNavGraph(
                 onVerified = {
                     val user = FixoraRepository.currentUser.value
                     FixoraRepository.markUserEmailVerified(user.id)
+                    FixoraRepository.connectBackend()
                     AppPreferences.setEmailVerified(context, true)
                     AppPreferences.setPendingVerifyEmail(context, null)
                     AppPreferences.saveUserSession(context, FixoraRepository.currentUser.value, isEmailVerified = true)
@@ -519,7 +514,13 @@ fun FixoraNavGraph(
 
         // Admin Dashboard
         composable(Screen.AdminDashboard.route) {
+            AdminAccessGate(
+                onNavigateBack = { navController.popBackStack() },
+                onSignIn = { navController.navigate(Screen.Login.route) { launchSingleTop = true } }
+            ) {
             AdminDashboardScreen(
+                onViewJobRequests = { navController.navigate(Screen.JobRequestsBrowse.route) },
+                onViewBooking = { navController.navigate(Screen.BookingTracking.createRoute(it)) },
                 onViewVerifications = {
                     navController.navigate(Screen.AdminVerifications.route)
                 },
@@ -545,27 +546,43 @@ fun FixoraNavGraph(
                     }
                 }
             )
+            }
         }
 
         // Admin Verifications
         composable(Screen.AdminVerifications.route) {
+            AdminAccessGate(
+                onNavigateBack = { navController.popBackStack() },
+                onSignIn = { navController.navigate(Screen.Login.route) { launchSingleTop = true } }
+            ) {
             AdminVerificationsScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
+            }
         }
 
         // Admin Disputes
         composable(Screen.AdminDisputes.route) {
+            AdminAccessGate(
+                onNavigateBack = { navController.popBackStack() },
+                onSignIn = { navController.navigate(Screen.Login.route) { launchSingleTop = true } }
+            ) {
             AdminDisputesScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
+            }
         }
 
         // Admin Categories
         composable(Screen.AdminCategories.route) {
+            AdminAccessGate(
+                onNavigateBack = { navController.popBackStack() },
+                onSignIn = { navController.navigate(Screen.Login.route) { launchSingleTop = true } }
+            ) {
             AdminCategoriesScreen(
                 onNavigateBack = { navController.popBackStack() }
             )
+            }
         }
 
         // Freelance Gig Details
@@ -579,7 +596,7 @@ fun FixoraNavGraph(
                 onNavigateBack = { navController.popBackStack() },
                 onOrderGig = { gig, pkg ->
                     val booking = FixoraRepository.orderGig(gig, pkg)
-                    navController.navigate(Screen.CustomerPayment.createRoute(booking.id))
+                    navController.navigate(Screen.BookingTracking.createRoute(booking.id))
                 },
                 onContactSeller = { providerId ->
                     navController.navigate(Screen.ProviderProfile.createRoute(providerId))
@@ -602,7 +619,7 @@ fun FixoraNavGraph(
             JobRequestsBrowseScreen(
                 onNavigateBack = { navController.popBackStack() },
                 onProposalAccepted = { bookingId ->
-                    navController.navigate(Screen.CustomerPayment.createRoute(bookingId))
+                    navController.navigate(Screen.BookingTracking.createRoute(bookingId))
                 }
             )
         }

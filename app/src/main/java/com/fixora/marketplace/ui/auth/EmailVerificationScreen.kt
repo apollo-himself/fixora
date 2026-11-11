@@ -37,7 +37,12 @@ fun EmailVerificationScreen(
 
     // Automatically send verification email once when screen is first shown
     LaunchedEffect(email) {
-        FirebaseAuthService.sendVerificationEmail(email)
+        isResending = true
+        when (val result = FirebaseAuthService.sendVerificationEmail(email)) {
+            is AuthResult.Success -> statusMessage = false to "Verification link sent. Check your inbox and spam folder."
+            is AuthResult.Error -> statusMessage = true to result.message
+        }
+        isResending = false
     }
 
     Column(
@@ -105,7 +110,7 @@ fun EmailVerificationScreen(
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Verification sent to:",
+                        text = "Email to verify:",
                         style = MaterialTheme.typography.labelSmall,
                         color = FixoraTextSecondary
                     )

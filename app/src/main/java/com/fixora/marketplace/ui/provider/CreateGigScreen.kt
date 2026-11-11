@@ -25,7 +25,7 @@ fun CreateGigScreen(
     val currentUser by FixoraRepository.currentUser.collectAsState()
     val providers by FixoraRepository.providers.collectAsState()
     val myProfile = providers.firstOrNull { it.userId == currentUser.id }
-        ?: providers.firstOrNull { it.id == "PROV-01" } ?: providers.first()
+        ?: run { Text("Your provider profile is loading or unavailable."); return }
 
     var title by remember { mutableStateOf("I will ") }
     var selectedCategory by remember { mutableStateOf("AC_SERVICE") }

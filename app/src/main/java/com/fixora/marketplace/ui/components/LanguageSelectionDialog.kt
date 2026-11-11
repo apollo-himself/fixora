@@ -42,7 +42,7 @@ val SupportedLanguages = listOf(
         code = "ur",
         name = "Urdu",
         nativeName = "اردو",
-        flag = "🇵🇰",
+        flag = "🌐",
         subtitle = "اردو"
     ),
     LanguageOption(

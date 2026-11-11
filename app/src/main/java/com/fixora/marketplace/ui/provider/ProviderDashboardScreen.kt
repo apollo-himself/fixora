@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import com.fixora.marketplace.data.local.AppPreferences
 import com.fixora.marketplace.data.model.BookingStatus
 import com.fixora.marketplace.data.model.UserRole
+import com.fixora.marketplace.data.model.displayName
 import com.fixora.marketplace.data.repository.FixoraRepository
 import com.fixora.marketplace.ui.components.FixoraTopBar
 import com.fixora.marketplace.ui.components.StarRatingBar
@@ -45,7 +46,7 @@ fun ProviderDashboardScreen(
 
     // Find current provider profile
     val myProfile = providers.firstOrNull { it.userId == currentUser.id }
-        ?: providers.firstOrNull { it.id == "PROV-01" } ?: providers.first()
+        ?: run { Text("Your provider profile is loading or unavailable."); return }
 
     // Active assigned job
     val activeJob = bookings.firstOrNull {
@@ -259,7 +260,7 @@ fun ProviderDashboardScreen(
                                     )
                                 }
                                 Text(
-                                    text = "Status: ${activeJob.status.name.replace('_', ' ')}",
+                                    text = "Status: ${activeJob.status.displayName()}",
                                     color = Color.White,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp
@@ -399,7 +400,7 @@ fun ProviderDashboardScreen(
                         HorizontalDivider(color = FixoraDivider)
                         ToolMenuRow(icon = Icons.Default.Map, title = "Service Areas & Hours", subtitle = "Manage service coverage and schedule", onClick = onViewAvailability)
                         HorizontalDivider(color = FixoraDivider)
-                        ToolMenuRow(icon = Icons.Default.VerifiedUser, title = "Document Verification", subtitle = "CNIC & Freelance Business Registration", onClick = onViewVerification)
+                        ToolMenuRow(icon = Icons.Default.VerifiedUser, title = "Document Verification", subtitle = "Identity and business documents", onClick = onViewVerification)
                     }
                 }
             }

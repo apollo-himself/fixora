@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fixora.marketplace.data.model.BookingStatus
+import com.fixora.marketplace.data.model.displayName
 import com.fixora.marketplace.data.repository.FixoraRepository
 import com.fixora.marketplace.ui.components.FixoraTopBar
 import com.fixora.marketplace.ui.components.StatusBadge
@@ -78,7 +79,7 @@ fun ProviderActiveJobScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(text = "Phone: ${booking.customerPhone}", style = MaterialTheme.typography.bodyMedium, color = FixoraTextSecondary)
-                        Text(text = "Property: ${booking.propertyType.name} (${booking.urgency.name})", style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
+                        Text(text = "Property: ${booking.propertyType.displayName()} (${booking.urgency.displayName()})", style = MaterialTheme.typography.labelSmall, color = FixoraTextMuted)
                         Spacer(modifier = Modifier.height(10.dp))
                         HorizontalDivider(color = FixoraDivider)
                         Spacer(modifier = Modifier.height(10.dp))
@@ -357,7 +358,7 @@ fun ProviderActiveJobScreen(
                                 )
                             }
                             else -> {
-                                Text(text = "Status: ${booking.status.name}", color = Color.White)
+                                Text(text = "Status: ${booking.status.displayName()}", color = Color.White)
                             }
                         }
                     }

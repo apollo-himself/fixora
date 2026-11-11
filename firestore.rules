@@ -1,146 +1,111 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // Helper functions
-    function isAuthenticated() {
-      return request.auth != null;
+    function signedIn() { return request.auth != null; }
+    function verified() { return signedIn() && request.auth.token.email_verified == true; }
+    function self(uid) { return signedIn() && request.auth.uid == uid; }
+    // Admin access is granted only through a trusted Firebase custom claim.
+    function admin() {
+      return verified() && request.auth.token.get('admin', false) == true;
     }
-
-    function isUser(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+    function approved(uid) {
+      return uid is string && exists(/databases/$(database)/documents/provider_profiles/$(uid)) &&
+        get(/databases/$(database)/documents/provider_profiles/$(uid)).data.isVerified == true &&
+        get(/databases/$(database)/documents/provider_profiles/$(uid)).data.documentStatus == 'APPROVED';
     }
+    function party(b) { return verified() && (b.customerId == request.auth.uid || b.providerId == request.auth.uid); }
+    function booking(id) { return get(/databases/$(database)/documents/bookings/$(id)).data; }
 
-    function isAdmin() {
-      return isAuthenticated() &&
-        (request.auth.token.role == 'ADMIN' ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN');
+    match /users/{uid} {
+      allow read: if self(uid) || admin();
+      allow create: if self(uid) && request.resource.data.id == uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.role in ['CUSTOMER', 'PROVIDER'];
+      allow update: if self(uid) && request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['name', 'phone', 'avatarUrl', 'role', 'isVerified']) &&
+        request.resource.data.role in ['CUSTOMER', 'PROVIDER'];
     }
-
-    function isProvider() {
-      return isAuthenticated() &&
-        (request.auth.token.role == 'PROVIDER' ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'PROVIDER');
+    match /provider_profiles/{uid} {
+      allow read: if verified() || self(uid);
+      allow create: if self(uid) && request.resource.data.id == uid &&
+        request.resource.data.userId == uid && request.resource.data.isVerified == false &&
+        request.resource.data.documentStatus == 'NOT_SUBMITTED' && request.resource.data.rating == 0 &&
+        request.resource.data.reviewCount == 0 && request.resource.data.completedJobs == 0 &&
+        !request.resource.data.keys().hasAny(['tradeLicenseNumber', 'emiratesIdNumber']);
+      allow update: if verified() && !request.resource.data.keys().hasAny(['tradeLicenseNumber', 'emiratesIdNumber']) &&
+        ((self(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+          ['name', 'phone', 'email', 'bio', 'skills', 'serviceAreas', 'isOnline', 'hourlyRateAed', 'workingHoursStart', 'workingHoursEnd', 'avatarUrl'])) ||
+         (self(uid) && request.resource.data.documentStatus == 'PENDING' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['documentStatus'])) ||
+         (admin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['documentStatus', 'isVerified'])));
     }
-
-    // Users collection
-    match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow write: if isUser(userId) || isAdmin();
+    match /provider_documents/{uid} {
+      allow read: if self(uid) || admin();
+      allow create, update: if verified() && self(uid) && request.resource.data.userId == uid &&
+        request.resource.data.keys().hasOnly(['userId', 'tradeLicenseNumber', 'emiratesIdNumber']);
     }
-
-    // Customer Profiles & Addresses
-    match /customer_profiles/{userId} {
-      allow read, write: if isUser(userId) || isAdmin();
+    match /gigs/{id} {
+      allow read: if verified();
+      allow create: if verified() && request.resource.data.id == id && self(request.resource.data.sellerId) &&
+        approved(request.auth.uid) && request.resource.data.title is string &&
+        request.resource.data.title.size() > 0 && request.resource.data.packages is list &&
+        request.resource.data.packages.size() > 0;
+      allow update: if verified() && self(resource.data.sellerId) && approved(request.auth.uid) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+          ['title', 'categoryId', 'description', 'packages', 'coverIcon', 'emirates']);
+      allow delete: if verified() && (self(resource.data.sellerId) || admin());
     }
-
-    match /customer_profiles/{userId}/addresses/{addressId} {
-      allow read, write: if isUser(userId) || isAdmin();
+    match /bookings/{id} {
+      allow get: if verified() && (!exists(/databases/$(database)/documents/bookings/$(id)) || party(resource.data) || admin());
+      allow list: if party(resource.data) || admin();
+      allow create: if verified() && request.resource.data.id == id && self(request.resource.data.customerId) &&
+        request.resource.data.paymentStatus == 'UNPAID' &&
+        request.resource.data.isCompletedByCustomer == false && request.resource.data.isCompletedByProvider == false &&
+        ((request.resource.data.providerId == null && request.resource.data.status in ['REQUESTED', 'MATCHING']) ||
+         (approved(request.resource.data.providerId) && request.resource.data.status == 'PROVIDER_ACCEPTED'));
+      allow update: if verified() && request.resource.data.paymentStatus == resource.data.paymentStatus &&
+        request.resource.data.status != 'PAYMENT_SETTLED' && request.resource.data.status != 'REFUNDED' &&
+        (customerChange() || providerChange());
+      function customerChange() {
+        let delta = request.resource.data.diff(resource.data).affectedKeys();
+        return self(resource.data.customerId) && (
+          // Only the customer can choose a provider for an unassigned booking.
+          (resource.data.providerId == null && resource.data.status in ['REQUESTED', 'MATCHING'] &&
+           approved(request.resource.data.providerId) && request.resource.data.status == 'PROVIDER_ACCEPTED' &&
+           delta.hasOnly(['providerId', 'providerName', 'providerPhone', 'providerRating', 'status', 'statusHistory', 'updatedAt'])) ||
+          (request.resource.data.status == 'CUSTOMER_CANCELLED' && resource.data.status in ['REQUESTED', 'MATCHING', 'PROVIDER_ACCEPTED', 'CONFIRMED'] &&
+           delta.hasOnly(['status', 'statusHistory', 'updatedAt', 'cancellationReason'])) ||
+          (request.resource.data.isCompletedByCustomer == true && resource.data.isCompletedByProvider == true &&
+           request.resource.data.status == 'COMPLETED' && delta.hasOnly(['isCompletedByCustomer', 'status', 'statusHistory', 'updatedAt'])) ||
+          (request.resource.data.status == 'DISPUTED' && delta.hasOnly(['status', 'statusHistory', 'updatedAt'])));
+      }
+      function providerChange() {
+        let delta = request.resource.data.diff(resource.data).affectedKeys();
+        let from = resource.data.status;
+        let to = request.resource.data.status;
+        return self(resource.data.providerId) && (
+          ((from == 'PROVIDER_ACCEPTED' && to in ['CONFIRMED', 'EN_ROUTE', 'PROVIDER_DECLINED']) ||
+           (from == 'CONFIRMED' && to == 'EN_ROUTE') || (from == 'EN_ROUTE' && to == 'ARRIVED') ||
+           (from == 'ARRIVED' && to == 'IN_PROGRESS') ||
+           (from == 'IN_PROGRESS' && to in ['AWAITING_CUSTOMER_APPROVAL', 'COMPLETED']) ||
+           (from == 'AWAITING_CUSTOMER_APPROVAL' && to == 'COMPLETED') ||
+           (from == 'COMPLETED' && to == 'COMPLETED')) &&
+          delta.hasOnly(['status', 'statusHistory', 'updatedAt', 'beforePhotoUrl', 'afterPhotoUrl', 'isCompletedByProvider', 'cancellationReason']) &&
+          (request.resource.data.isCompletedByProvider == resource.data.isCompletedByProvider || to == 'COMPLETED'));
+      }
     }
-
-    // Provider Profiles
-    match /provider_profiles/{providerId} {
-      allow read: if isAuthenticated();
-      allow create: if isProvider() || isAdmin();
-      allow update: if (isProvider() && resource.data.userId == request.auth.uid) || isAdmin();
-      allow delete: if isAdmin();
+    match /messages/{id} {
+      allow get: if verified() && (!exists(/databases/$(database)/documents/messages/$(id)) || request.auth.uid in resource.data.participantIds || admin());
+      allow list: if verified() && (request.auth.uid in resource.data.participantIds || admin());
+      allow create: if verified() && request.resource.data.id == id &&
+        self(request.resource.data.senderId) && party(booking(request.resource.data.bookingId)) &&
+        booking(request.resource.data.bookingId).providerId != null &&
+        request.resource.data.participantIds.toSet() == [booking(request.resource.data.bookingId).customerId, booking(request.resource.data.bookingId).providerId].toSet() &&
+        request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 4000 &&
+        request.resource.data.isAutoReply == false && request.resource.data.isRead == false;
+      // Messages are immutable. No impersonated replies or client-side edits.
     }
-
-    // Confidential Provider Documents (Emirates ID, License) - Strictly restricted!
-    match /provider_documents/{providerId} {
-      allow read: if (isProvider() && resource.data.userId == request.auth.uid) || isAdmin();
-      allow write: if (isProvider() && request.auth.uid == request.resource.data.userId) || isAdmin();
-    }
-
-    // Service Categories & Service Catalog (Publicly readable)
-    match /service_categories/{categoryId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    match /service_catalog/{serviceId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    // Bookings
-    match /bookings/{bookingId} {
-      allow read: if isAuthenticated() && (
-        resource.data.customerId == request.auth.uid ||
-        resource.data.providerId == request.auth.uid ||
-        isAdmin() ||
-        (isProvider() && resource.data.status in ['REQUESTED', 'MATCHING'])
-      );
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && (
-        resource.data.customerId == request.auth.uid ||
-        resource.data.providerId == request.auth.uid ||
-        (isProvider() && resource.data.status in ['REQUESTED', 'MATCHING']) ||
-        isAdmin()
-      );
-      allow delete: if isAdmin();
-    }
-
-    // Quotations
-    match /quotations/{quotationId} {
-      allow read: if isAuthenticated() && (
-        resource.data.providerId == request.auth.uid ||
-        get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid ||
-        isAdmin()
-      );
-      allow create: if isProvider() || isAdmin();
-      allow update: if isAuthenticated();
-    }
-
-    // Chat Conversations & Messages
-    match /conversations/{conversationId}/messages/{messageId} {
-      allow read, create: if isAuthenticated() && (
-        resource.data.senderId == request.auth.uid ||
-        request.resource.data.senderId == request.auth.uid ||
-        isAdmin()
-      );
-    }
-
-    // Reviews (Publicly readable, authenticated write)
-    match /reviews/{reviewId} {
-      allow read: if true;
-      allow create: if isAuthenticated() && request.resource.data.customerId == request.auth.uid;
-      allow update, delete: if isAdmin();
-    }
-
-    // Disputes
-    match /disputes/{disputeId} {
-      allow read: if isAuthenticated() && (
-        resource.data.customerId == request.auth.uid ||
-        resource.data.providerId == request.auth.uid ||
-        isAdmin()
-      );
-      allow create: if isAuthenticated();
-      allow update: if isAdmin();
-    }
-
-    // Financial Ledger, Commissions, and Payout Records - ADMIN ONLY
-    match /financial_ledger/{entryId} {
-      allow read, write: if isAdmin();
-    }
-
-    match /commissions/{commissionId} {
-      allow read, write: if isAdmin();
-    }
-
-    match /payouts/{payoutId} {
-      allow read: if (isProvider() && resource.data.providerId == request.auth.uid) || isAdmin();
-      allow write: if isAdmin();
-    }
-
-    // Admin Settings & Audit Logs
-    match /admin_settings/{settingId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
-    }
-
-    match /audit_logs/{logId} {
-      allow read, write: if isAdmin();
-    }
+    match /service_categories/{id} { allow read: if true; allow write: if admin(); }
+    match /service_catalog/{id} { allow read: if true; allow write: if admin(); }
+    match /{document=**} { allow read, write: if false; }
   }
 }

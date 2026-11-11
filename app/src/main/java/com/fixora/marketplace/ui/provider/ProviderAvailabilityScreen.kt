@@ -24,7 +24,7 @@ fun ProviderAvailabilityScreen(
     val providers by FixoraRepository.providers.collectAsState()
 
     val myProfile = providers.firstOrNull { it.userId == currentUser.id }
-        ?: providers.firstOrNull { it.id == "PROV-01" } ?: providers.first()
+        ?: run { Text("Your provider profile is loading or unavailable."); return }
 
     val availableAreas = listOf("DHA Phase 5, Lahore", "Downtown", "Al Barsha", "JBR", "Business Bay", "Deira", "Jumeirah", "Karachi", "Al Majaz", "Islamabad")
     var selectedAreas by remember { mutableStateOf(myProfile.serviceAreas.toSet()) }

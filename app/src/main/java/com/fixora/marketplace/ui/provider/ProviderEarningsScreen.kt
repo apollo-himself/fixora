@@ -30,7 +30,7 @@ fun ProviderEarningsScreen(
     val ledger by FixoraRepository.ledger.collectAsState()
 
     val myProfile = providers.firstOrNull { it.userId == currentUser.id }
-        ?: providers.firstOrNull { it.id == "PROV-01" } ?: providers.first()
+        ?: run { Text("Your provider profile is loading or unavailable."); return }
 
     val myCompletedBookings = bookings.filter {
         it.providerId == myProfile.id && it.status == BookingStatus.PAYMENT_SETTLED

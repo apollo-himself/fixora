@@ -3,6 +3,7 @@ package com.fixora.marketplace.data.model
 data class ChatMessage(
     val id: String,
     val bookingId: String,
+    val participantIds: List<String> = emptyList(),
     val senderId: String,
     val senderName: String,
     val senderRole: UserRole,

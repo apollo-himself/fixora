@@ -372,7 +372,7 @@ fun CustomerProfileScreen(
                     HorizontalDivider(color = FixoraDivider)
                     Text("Your Rights", fontWeight = FontWeight.SemiBold)
                     Text(
-                        "You may request deletion of your account and data at any time by contacting support@fixora.pk.",
+                        "Contact support through the app to request account or data deletion.",
                         style = MaterialTheme.typography.bodySmall,
                         color = FixoraTextSecondary
                     )

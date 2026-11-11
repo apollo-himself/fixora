@@ -124,6 +124,8 @@ fun AdminVerificationsScreen(
 
 @Composable
 private fun _VerificationCard(provider: ProviderProfile) {
+    val categories by FixoraRepository.categories.collectAsState()
+    val categoryNames = categories.associate { it.id to it.name }
     var expanded by remember { mutableStateOf(false) }
 
     Card(
@@ -150,7 +152,7 @@ private fun _VerificationCard(provider: ProviderProfile) {
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            provider.name.first().uppercase(),
+                            provider.name.take(1).uppercase(),
                             fontWeight = FontWeight.ExtraBold,
                             color = FixoraPrimary,
                             fontSize = 20.sp
@@ -196,11 +198,11 @@ private fun _VerificationCard(provider: ProviderProfile) {
                 Spacer(Modifier.height(10.dp))
 
                 // Document info
-                _InfoRow(icon = Icons.Default.Badge, label = "CNIC / Emirates ID", value = provider.emiratesIdNumber ?: "Not uploaded")
+                _InfoRow(icon = Icons.Default.Badge, label = "Government-issued ID", value = provider.emiratesIdNumber ?: "Not uploaded")
                 _InfoRow(icon = Icons.Default.BusinessCenter, label = "Trade/Business License", value = provider.tradeLicenseNumber ?: "Not submitted")
                 _InfoRow(icon = Icons.Default.Phone, label = "Phone", value = provider.phone)
                 _InfoRow(icon = Icons.Default.LocationOn, label = "Service Areas", value = provider.serviceAreas.joinToString(", "))
-                _InfoRow(icon = Icons.Default.Build, label = "Specialties", value = provider.skills.joinToString(", "))
+                _InfoRow(icon = Icons.Default.Build, label = "Specialties", value = provider.skills.joinToString(", ") { skill -> categoryNames[skill] ?: skill.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() } })
                 _InfoRow(icon = Icons.Default.Schedule, label = "Working Hours", value = "${provider.workingHoursStart} – ${provider.workingHoursEnd}")
 
                 // Actions (only show when pending or rejected)

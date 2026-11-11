@@ -5,7 +5,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.unit.dp
+import com.fixora.marketplace.data.repository.CloudStore
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -51,7 +55,27 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         color = FixoraBackground
                     ) {
-                        FixoraNavGraph()
+                        val pending by CloudStore.pendingWrites.collectAsState()
+                        val error by CloudStore.error.collectAsState()
+                        val snackbar = remember { SnackbarHostState() }
+                        LaunchedEffect(error) {
+                            error?.let {
+                                snackbar.showSnackbar(it, duration = SnackbarDuration.Long)
+                                if (CloudStore.error.value == it) CloudStore.error.value = null
+                            }
+                        }
+                        Scaffold(
+                            snackbarHost = { SnackbarHost(snackbar) },
+                            contentWindowInsets = WindowInsets(0, 0, 0, 0)
+                        ) { padding ->
+                            Column(Modifier.fillMaxSize().padding(padding)) {
+                                if (pending > 0) {
+                                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                                    Text("Saving changes…", modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+                                }
+                                Box(Modifier.weight(1f)) { FixoraNavGraph() }
+                            }
+                        }
                     }
                 }
             }

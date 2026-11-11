@@ -129,6 +129,8 @@ object AppPreferences {
     }
 
     fun clearSession(context: Context) {
+        com.fixora.marketplace.data.repository.FixoraRepository.disconnectBackend()
+        com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
         getPrefs(context).edit()
             .putBoolean(KEY_IS_LOGGED_IN, false)
             .putBoolean(KEY_EMAIL_VERIFIED, false)

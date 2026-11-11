@@ -1,6 +1,9 @@
 package com.fixora.marketplace.data.auth
 
-import kotlinx.coroutines.delay
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.tasks.await
 
 sealed class AuthResult<out T> {
     data class Success<T>(val data: T) : AuthResult<T>()
@@ -8,42 +11,50 @@ sealed class AuthResult<out T> {
 }
 
 object FirebaseAuthService {
-    // Keeps track of when verification was sent to enforce rate-limiting
-    private var lastVerificationSentTimestamp: Long = 0L
+    private val auth get() = FirebaseAuth.getInstance()
+    private val lastSent = mutableMapOf<String, Long>()
 
-    // In a live Firebase setup with google-services.json, this calls:
-    // FirebaseAuth.getInstance().createUserWithEmailAndPassword(email, password)
-    // and Firebase.auth.currentUser?.sendEmailVerification()
-    //
-    // Here we provide a robust production-pattern implementation that gracefully
-    // integrates with Firebase Auth if initialized, or runs reliable verification handling.
-
-    suspend fun sendVerificationEmail(email: String): AuthResult<Unit> {
-        val now = System.currentTimeMillis()
-        if (now - lastVerificationSentTimestamp < 30_000L) {
-            val waitSec = ((30_000L - (now - lastVerificationSentTimestamp)) / 1000).coerceAtLeast(1)
-            return AuthResult.Error("Please wait $waitSec seconds before requesting another verification email.")
-        }
-
-        return try {
-            delay(800) // Realistic network delay
-            lastVerificationSentTimestamp = now
-            AuthResult.Success(Unit)
-        } catch (e: Exception) {
-            AuthResult.Error(e.localizedMessage ?: "Failed to send verification email. Please check your network connection.")
-        }
+    private suspend fun <T> attempt(block: suspend () -> T): AuthResult<T> = try {
+        AuthResult.Success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        AuthResult.Error(e.localizedMessage ?: "Unable to connect. Please try again.")
     }
 
-    suspend fun checkEmailVerified(email: String): AuthResult<Boolean> {
-        return try {
-            delay(600) // Simulated network reload
-            // In live Firebase:
-            // val user = FirebaseAuth.getInstance().currentUser
-            // user?.reload()?.await()
-            // return AuthResult.Success(user?.isEmailVerified == true)
-            AuthResult.Success(true)
-        } catch (e: Exception) {
-            AuthResult.Error("Network error while checking verification status. Please check your connection and try again.")
+    suspend fun signIn(email: String, password: String): AuthResult<FirebaseUser> = attempt {
+        requireNotNull(auth.signInWithEmailAndPassword(email.trim(), password).await().user)
+            .also { it.reload().await() }
+    }
+
+    suspend fun signUp(email: String, password: String): AuthResult<FirebaseUser> = attempt {
+        requireNotNull(auth.createUserWithEmailAndPassword(email.trim(), password).await().user)
+    }
+
+    suspend fun sendPasswordReset(email: String): AuthResult<Unit> = attempt {
+        auth.sendPasswordResetEmail(email.trim()).await()
+        Unit
+    }
+
+    suspend fun sendVerificationEmail(email: String): AuthResult<Unit> = attempt {
+        val user = requireNotNull(auth.currentUser) { "Please sign in again." }
+        require(user.email.equals(email, ignoreCase = true)) { "Please sign in with this email address." }
+        val now = System.currentTimeMillis()
+        require(now - (lastSent[user.uid] ?: 0L) >= 30_000L) {
+            "Please wait 30 seconds before requesting another verification email."
         }
+        // Firebase's hosted action handler verifies the link in the browser.
+        // No Dynamic Links or custom deep-link domain is required.
+        user.sendEmailVerification().await()
+        lastSent[user.uid] = now
+        Unit
+    }
+
+    suspend fun checkEmailVerified(email: String): AuthResult<Boolean> = attempt {
+        val user = requireNotNull(auth.currentUser) { "Please sign in again." }
+        require(user.email.equals(email, ignoreCase = true)) { "Please sign in with this email address." }
+        user.reload().await()
+        if (user.isEmailVerified) user.getIdToken(true).await()
+        user.isEmailVerified
     }
 }
